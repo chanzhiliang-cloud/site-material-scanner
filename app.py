@@ -59,12 +59,12 @@ def delete_record(record_id):
 init_db()
 
 # -----------------------------------------------------------------------------
-# 2. IMAGE PRE-PROCESSING & PYDANTIC SCHEMA
+# 2. IMAGE OPTIMIZER & PYDANTIC SCHEMA
 # -----------------------------------------------------------------------------
 def optimize_image(img, max_dim=1024):
     """
-    Resizes raw camera uploads (e.g. 12MP photos) to max 1024px.
-    Slashes token footprint from ~250k down to ~1k, preventing instant 503/429 crashes.
+    Resizes raw high-res camera photos down to max 1024px.
+    Reduces image payload by ~95%, keeping tokens well within free-tier limits.
     """
     img = img.convert("RGB")
     width, height = img.size
@@ -86,21 +86,21 @@ class MaterialAnalysis(BaseModel):
     high_price_myr: float = Field(description="High-end market price in Malaysian Ringgit (MYR)")
 
 # -----------------------------------------------------------------------------
-# 3. RESILIENT GEMINI API CALL WITH BACKOFF
+# 3. RESILIENT GEMINI CALL (Valid Models + Informative Logging)
 # -----------------------------------------------------------------------------
 def call_gemini_with_fallback(client, img, prompt):
     """
-    Executes image analysis across model tiers with backoff retries.
-    Uses optimized image payloads to stay well below rate-limit thresholds.
+    Tries validated production models sequentially with image compression and backoff.
     """
+    # Standard supported Gemini vision models
     models_to_try = [
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash"
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash"
     ]
     max_retries_per_model = 3
 
-    # Compress visual tokens before dispatching API call
+    # Compress image tokens first
     optimized_img = optimize_image(img, max_dim=1024)
 
     for model_name in models_to_try:
@@ -121,15 +121,15 @@ def call_gemini_with_fallback(client, img, prompt):
                 is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "429", "Overloaded"])
                 
                 if is_transient and attempt < max_retries_per_model - 1:
-                    wait_time = (2 ** attempt) + random.uniform(1.0, 2.5)
-                    st.warning(f"[{model_name}] Server busy. Retrying in {wait_time:.1f}s... (Attempt {attempt + 1}/{max_retries_per_model})")
+                    wait_time = (2 ** attempt) + random.uniform(1.0, 2.0)
+                    st.warning(f"[{model_name}] Free tier busy. Retrying in {wait_time:.1f}s... (Attempt {attempt + 1}/{max_retries_per_model})")
                     time.sleep(wait_time)
                 else:
                     if model_name != models_to_try[-1]:
-                        st.info(f"Switching from `{model_name}` to fallback model...")
+                        st.info(f"Skipping `{model_name}` ({err_str[:60]}...) $\\rightarrow$ Trying fallback model...")
                     break
 
-    raise RuntimeError("Google Gemini free-tier servers are overloaded. Wait 10 seconds and try again, or attach a payment method in Google AI Studio for Tier 1 billing access.")
+    raise RuntimeError("Google Gemini free-tier servers are currently at maximum capacity. Please wait 10-15 seconds and try again, or add a billing method in Google AI Studio to unlock Tier 1 priority bandwidth.")
 
 # -----------------------------------------------------------------------------
 # 4. STREAMLIT UI CONFIGURATION
@@ -170,7 +170,7 @@ with tab1:
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar to proceed.")
             else:
-                with st.spinner("Optimizing image and querying Malaysian market rates..."):
+                with st.spinner("Analyzing site photo and querying local Malaysian rates..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
@@ -186,7 +186,6 @@ with tab1:
                         5. High Price Range in MYR (RM) based on current local Malaysian retail prices.
                         """
 
-                        # Execute call with image compression, model cascade & exponential backoff
                         response_text = call_gemini_with_fallback(client, img, prompt)
                         data = json.loads(response_text)
 
