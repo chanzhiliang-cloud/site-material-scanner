@@ -59,8 +59,25 @@ def delete_record(record_id):
 init_db()
 
 # -----------------------------------------------------------------------------
-# 2. PYDANTIC SCHEMA & RESILIENT GEMINI CALL (Model Cascade + Backoff)
+# 2. IMAGE PRE-PROCESSING & PYDANTIC SCHEMA
 # -----------------------------------------------------------------------------
+def optimize_image(img, max_dim=1024):
+    """
+    Resizes raw camera uploads (e.g. 12MP photos) to max 1024px.
+    Slashes token footprint from ~250k down to ~1k, preventing instant 503/429 crashes.
+    """
+    img = img.convert("RGB")
+    width, height = img.size
+    if max(width, height) > max_dim:
+        if width > height:
+            new_w = max_dim
+            new_h = int(height * (max_dim / width))
+        else:
+            new_h = max_dim
+            new_w = int(width * (max_dim / height))
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    return img
+
 class MaterialAnalysis(BaseModel):
     item_name: str = Field(description="Name or brand of the construction material")
     specifications: str = Field(description="Dimensions, grade, thickness, or material type")
@@ -68,25 +85,30 @@ class MaterialAnalysis(BaseModel):
     low_price_myr: float = Field(description="Low-end market price in Malaysian Ringgit (MYR)")
     high_price_myr: float = Field(description="High-end market price in Malaysian Ringgit (MYR)")
 
-
+# -----------------------------------------------------------------------------
+# 3. RESILIENT GEMINI API CALL WITH BACKOFF
+# -----------------------------------------------------------------------------
 def call_gemini_with_fallback(client, img, prompt):
     """
-    Executes image analysis using a resilient backoff strategy across active 2026 models:
-    Primary: gemini-2.5-flash -> Secondary: gemini-2.0-flash -> Fallback: gemini-2.0-flash-lite
+    Executes image analysis across model tiers with backoff retries.
+    Uses optimized image payloads to stay well below rate-limit thresholds.
     """
     models_to_try = [
+        "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-lite"
+        "gemini-2.0-flash"
     ]
     max_retries_per_model = 3
+
+    # Compress visual tokens before dispatching API call
+    optimized_img = optimize_image(img, max_dim=1024)
 
     for model_name in models_to_try:
         for attempt in range(max_retries_per_model):
             try:
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=[img, prompt],
+                    contents=[optimized_img, prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=MaterialAnalysis,
@@ -99,18 +121,18 @@ def call_gemini_with_fallback(client, img, prompt):
                 is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "429", "Overloaded"])
                 
                 if is_transient and attempt < max_retries_per_model - 1:
-                    wait_time = (2 ** attempt) + random.uniform(0.5, 1.5)
-                    st.warning(f"[{model_name}] Busy (503/429). Retrying in {wait_time:.1f}s... (Attempt {attempt + 1}/{max_retries_per_model})")
+                    wait_time = (2 ** attempt) + random.uniform(1.0, 2.5)
+                    st.warning(f"[{model_name}] Server busy. Retrying in {wait_time:.1f}s... (Attempt {attempt + 1}/{max_retries_per_model})")
                     time.sleep(wait_time)
                 else:
                     if model_name != models_to_try[-1]:
                         st.info(f"Switching from `{model_name}` to fallback model...")
                     break
 
-    raise RuntimeError("Google Gemini servers are currently experiencing peak traffic. Please wait 10 seconds and try clicking 'Identify & Search Market Prices' again.")
+    raise RuntimeError("Google Gemini free-tier servers are overloaded. Wait 10 seconds and try again, or attach a payment method in Google AI Studio for Tier 1 billing access.")
 
 # -----------------------------------------------------------------------------
-# 3. STREAMLIT UI CONFIGURATION
+# 4. STREAMLIT UI CONFIGURATION
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Site Material Scanner", page_icon="🏗️", layout="wide")
 
@@ -123,7 +145,7 @@ if not api_key and "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
 
 # -----------------------------------------------------------------------------
-# 4. FIELD INPUT (Camera or File Upload)
+# 5. FIELD INPUT (Camera or File Upload)
 # -----------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["📸 Scan Material", "📊 Local Inventory History"])
 
@@ -148,7 +170,7 @@ with tab1:
             if not api_key:
                 st.error("Please enter your Gemini API Key in the sidebar to proceed.")
             else:
-                with st.spinner("Analyzing image and querying Malaysian market rates..."):
+                with st.spinner("Optimizing image and querying Malaysian market rates..."):
                     try:
                         client = genai.Client(api_key=api_key)
                         
@@ -164,7 +186,7 @@ with tab1:
                         5. High Price Range in MYR (RM) based on current local Malaysian retail prices.
                         """
 
-                        # Execute call with model cascade & exponential backoff
+                        # Execute call with image compression, model cascade & exponential backoff
                         response_text = call_gemini_with_fallback(client, img, prompt)
                         data = json.loads(response_text)
 
@@ -192,7 +214,7 @@ with tab1:
                         st.error(f"⚠️ {str(e)}")
 
 # -----------------------------------------------------------------------------
-# 5. IN-APP STORAGE & HISTORY TAB
+# 6. IN-APP STORAGE & HISTORY TAB
 # -----------------------------------------------------------------------------
 with tab2:
     st.subheader("Stored Material Records")
