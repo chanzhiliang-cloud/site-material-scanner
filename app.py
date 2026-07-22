@@ -97,7 +97,11 @@ with tab1:
             else:
                 with st.spinner("Analyzing image and looking up current Malaysian market rates..."):
                     try:
-                        client = genai.Client(api_key=api_key)
+                        # Fixed Client initialization targeting the stable 'v1' endpoint
+                        client = genai.Client(
+                            api_key=api_key,
+                            http_options=types.HttpOptions(api_version='v1')
+                        )
                         
                         prompt = """
                         You are a professional construction quantity surveyor and procurement manager in Malaysia.
@@ -113,25 +117,25 @@ with tab1:
                         Return ONLY JSON matching the requested fields.
                         """
 
-                        # Standard structured JSON schema response
+                        # Standard structured JSON schema response with updated active model
                         response = client.models.generate_content(
-    model='gemini-1.5-flash',  # Updated active model name
-    contents=[img, prompt],
-    config=types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema={
-            "type": "OBJECT",
-            "properties": {
-                "item_name": {"type": "STRING"},
-                "specifications": {"type": "STRING"},
-                "unit": {"type": "STRING"},
-                "low_price_myr": {"type": "NUMBER"},
-                "high_price_myr": {"type": "NUMBER"}
-            },
-            "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
-        }
-    )
-)
+                            model='gemini-2.5-flash',
+                            contents=[img, prompt],
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema={
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "item_name": {"type": "STRING"},
+                                        "specifications": {"type": "STRING"},
+                                        "unit": {"type": "STRING"},
+                                        "low_price_myr": {"type": "NUMBER"},
+                                        "high_price_myr": {"type": "NUMBER"}
+                                    },
+                                    "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
+                                }
+                            )
+                        )
 
                         data = json.loads(response.text)
 
