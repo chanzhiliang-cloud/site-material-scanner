@@ -97,7 +97,7 @@ with tab1:
             else:
                 with st.spinner("Analyzing image and looking up current Malaysian market rates..."):
                     try:
-                        # Fixed Client initialization targeting the stable 'v1' endpoint
+                        # Client setup referencing active stable endpoint
                         client = genai.Client(
                             api_key=api_key,
                             http_options=types.HttpOptions(api_version='v1')
@@ -117,9 +117,9 @@ with tab1:
                         Return ONLY JSON matching the requested fields.
                         """
 
-                        # Standard structured JSON schema response with updated active model
+                        # Updated active model: gemini-3.5-flash
                         response = client.models.generate_content(
-                            model='gemini-2.5-flash',
+                            model='gemini-3.5-flash',
                             contents=[img, prompt],
                             config=types.GenerateContentConfig(
                                 response_mime_type="application/json",
