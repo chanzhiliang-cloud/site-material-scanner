@@ -61,9 +61,11 @@ init_db()
 # -----------------------------------------------------------------------------
 def call_gemini_with_fallback(client, img, prompt, response_schema):
     """
-    Executes image analysis with model fallback and exponential retry backoff.
+    Executes image analysis using valid Gemini API model strings, 
+    exponential backoff retries, and automatic model fallback.
     """
-    models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    # Standard official Gemini API model strings
+    models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
     max_retries_per_model = 3
 
     for model_name in models_to_try:
@@ -80,12 +82,12 @@ def call_gemini_with_fallback(client, img, prompt, response_schema):
                 return response.text
             except Exception as api_err:
                 err_str = str(api_err)
-                is_503 = "503" in err_str or "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "429"])
                 
-                # Retry if temporary server overload
-                if is_503 and attempt < max_retries_per_model - 1:
+                # Retry if temporary server overload or rate-limited
+                if is_transient and attempt < max_retries_per_model - 1:
                     wait_time = 2 * (attempt + 1)
-                    st.warning(f"[{model_name}] Server busy (503). Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries_per_model})")
+                    st.warning(f"[{model_name}] Server busy. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries_per_model})")
                     time.sleep(wait_time)
                 else:
                     # Move to fallback model if retries fail on primary
@@ -180,7 +182,7 @@ with tab1:
 
                         st.success("✅ Analysis Complete & Saved to Internal App Database!")
                         
-                        # Display Results
+                        # Display Results Card
                         col1, col2, col3 = st.columns(3)
                         col1.metric("Material", data["item_name"])
                         col2.metric("Unit", data["unit"])
