@@ -5,6 +5,7 @@ from PIL import Image
 import json
 import os
 import time
+import random
 from google import genai
 from google.genai import types
 
@@ -57,16 +58,14 @@ def delete_record(record_id):
 init_db()
 
 # -----------------------------------------------------------------------------
-# 2. HELPER: ROBUST GEMINI CALL (Retry + Fallback Strategy)
+# 2. HELPER: ROBUST GEMINI CALL (Extended Retry + Exponential Backoff)
 # -----------------------------------------------------------------------------
 def call_gemini_with_fallback(client, img, prompt, response_schema):
     """
-    Executes image analysis using valid Gemini API model strings, 
-    exponential backoff retries, and automatic model fallback.
+    Executes image analysis using resilient backoff retries and model switching.
     """
-    # Standard official Gemini API model strings
     models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash"]
-    max_retries_per_model = 3
+    max_retries_per_model = 5  # Increased retries for peak load periods
 
     for model_name in models_to_try:
         for attempt in range(max_retries_per_model):
@@ -82,20 +81,19 @@ def call_gemini_with_fallback(client, img, prompt, response_schema):
                 return response.text
             except Exception as api_err:
                 err_str = str(api_err)
-                is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "429"])
+                is_transient = any(code in err_str for code in ["503", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "429", "Overloaded"])
                 
-                # Retry if temporary server overload or rate-limited
                 if is_transient and attempt < max_retries_per_model - 1:
-                    wait_time = 2 * (attempt + 1)
-                    st.warning(f"[{model_name}] Server busy. Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries_per_model})")
+                    # Exponential backoff with random jitter: 3s, 6s, 9s, 12s...
+                    wait_time = (attempt + 1) * 3 + random.uniform(0.5, 1.5)
+                    st.warning(f"[{model_name}] Google server busy (503/429). Retrying in {wait_time:.1f}s... (Attempt {attempt + 1}/{max_retries_per_model})")
                     time.sleep(wait_time)
                 else:
-                    # Move to fallback model if retries fail on primary
                     if model_name != models_to_try[-1]:
-                        st.info(f"Primary model ({model_name}) unavailable. Switching to fallback model...")
+                        st.info(f"Switching from primary model ({model_name}) to fallback model...")
                     break
 
-    raise RuntimeError("All configured Gemini models are currently busy or unavailable. Please try again in a few moments.")
+    raise RuntimeError("Google Gemini servers are currently experiencing high global traffic. Please wait 10-15 seconds and click 'Identify & Search Market Prices' again.")
 
 # -----------------------------------------------------------------------------
 # 3. STREAMLIT UI CONFIGURATION
@@ -166,7 +164,7 @@ with tab1:
                             "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
                         }
 
-                        # Execute with retries & model fallback
+                        # Execute call with exponential backoff
                         response_text = call_gemini_with_fallback(client, img, prompt, json_schema)
                         data = json.loads(response_text)
 
@@ -191,7 +189,7 @@ with tab1:
                         st.info(f"**Specs:** {data['specifications']}")
 
                     except Exception as e:
-                        st.error(f"Error processing request: {str(e)}")
+                        st.error(f"⚠️ {str(e)}")
 
 # -----------------------------------------------------------------------------
 # 5. IN-APP STORAGE & HISTORY TAB
