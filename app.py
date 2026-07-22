@@ -114,10 +114,10 @@ with tab1:
                         Return ONLY JSON matching the requested fields.
                         """
 
-                        # --- RETRY & FALLBACK LOGIC ---
+                        # --- RETRY & MODEL CONFIGURATION ---
                         max_retries = 3
                         response = None
-                        target_model = "gemini-2.5-flash"
+                        target_model = "gemini-3.5-flash"  # Updated to the current stable model
 
                         for attempt in range(max_retries):
                             try:
@@ -143,7 +143,6 @@ with tab1:
                             except Exception as api_err:
                                 err_str = str(api_err)
                                 if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_retries - 1:
-                                    # Exponential backoff: wait 2s on attempt 1, 4s on attempt 2
                                     time.sleep(2 * (attempt + 1))
                                     continue
                                 else:
