@@ -4,6 +4,7 @@ import pandas as pd
 from PIL import Image
 import json
 import os
+import time
 from google import genai
 from google.genai import types
 
@@ -97,11 +98,7 @@ with tab1:
             else:
                 with st.spinner("Analyzing image and looking up current Malaysian market rates..."):
                     try:
-                        # Client setup referencing active stable endpoint
-                        client = genai.Client(
-                            api_key=api_key,
-                            http_options=types.HttpOptions(api_version='v1')
-                        )
+                        client = genai.Client(api_key=api_key)
                         
                         prompt = """
                         You are a professional construction quantity surveyor and procurement manager in Malaysia.
@@ -117,25 +114,40 @@ with tab1:
                         Return ONLY JSON matching the requested fields.
                         """
 
-                        # Updated active model: gemini-3.5-flash
-                        response = client.models.generate_content(
-                            model='gemini-3.5-flash',
-                            contents=[img, prompt],
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json",
-                                response_schema={
-                                    "type": "OBJECT",
-                                    "properties": {
-                                        "item_name": {"type": "STRING"},
-                                        "specifications": {"type": "STRING"},
-                                        "unit": {"type": "STRING"},
-                                        "low_price_myr": {"type": "NUMBER"},
-                                        "high_price_myr": {"type": "NUMBER"}
-                                    },
-                                    "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
-                                }
-                            )
-                        )
+                        # --- RETRY & FALLBACK LOGIC ---
+                        max_retries = 3
+                        response = None
+                        target_model = "gemini-2.5-flash"
+
+                        for attempt in range(max_retries):
+                            try:
+                                response = client.models.generate_content(
+                                    model=target_model,
+                                    contents=[img, prompt],
+                                    config=types.GenerateContentConfig(
+                                        response_mime_type="application/json",
+                                        response_schema={
+                                            "type": "OBJECT",
+                                            "properties": {
+                                                "item_name": {"type": "STRING"},
+                                                "specifications": {"type": "STRING"},
+                                                "unit": {"type": "STRING"},
+                                                "low_price_myr": {"type": "NUMBER"},
+                                                "high_price_myr": {"type": "NUMBER"}
+                                            },
+                                            "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
+                                        }
+                                    )
+                                )
+                                break  # Call succeeded, exit retry loop
+                            except Exception as api_err:
+                                err_str = str(api_err)
+                                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_retries - 1:
+                                    # Exponential backoff: wait 2s on attempt 1, 4s on attempt 2
+                                    time.sleep(2 * (attempt + 1))
+                                    continue
+                                else:
+                                    raise api_err
 
                         data = json.loads(response.text)
 
