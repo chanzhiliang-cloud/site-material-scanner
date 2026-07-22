@@ -9,7 +9,7 @@ from google import genai
 from google.genai import types
 
 # -----------------------------------------------------------------------------
-# 1. DATABASE SETUP (Local SQLite - Stored on device/server)
+# 1. DATABASE SETUP (Local SQLite)
 # -----------------------------------------------------------------------------
 DB_FILE = "material_inventory.db"
 
@@ -57,7 +57,46 @@ def delete_record(record_id):
 init_db()
 
 # -----------------------------------------------------------------------------
-# 2. STREAMLIT UI CONFIGURATION
+# 2. HELPER: ROBUST GEMINI CALL (Retry + Fallback Strategy)
+# -----------------------------------------------------------------------------
+def call_gemini_with_fallback(client, img, prompt, response_schema):
+    """
+    Executes image analysis with model fallback and exponential retry backoff.
+    """
+    models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    max_retries_per_model = 3
+
+    for model_name in models_to_try:
+        for attempt in range(max_retries_per_model):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[img, prompt],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=response_schema
+                    )
+                )
+                return response.text
+            except Exception as api_err:
+                err_str = str(api_err)
+                is_503 = "503" in err_str or "UNAVAILABLE" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                
+                # Retry if temporary server overload
+                if is_503 and attempt < max_retries_per_model - 1:
+                    wait_time = 2 * (attempt + 1)
+                    st.warning(f"[{model_name}] Server busy (503). Retrying in {wait_time}s... (Attempt {attempt + 1}/{max_retries_per_model})")
+                    time.sleep(wait_time)
+                else:
+                    # Move to fallback model if retries fail on primary
+                    if model_name != models_to_try[-1]:
+                        st.info(f"Primary model ({model_name}) unavailable. Switching to fallback model...")
+                    break
+
+    raise RuntimeError("All configured Gemini models are currently busy or unavailable. Please try again in a few moments.")
+
+# -----------------------------------------------------------------------------
+# 3. STREAMLIT UI CONFIGURATION
 # -----------------------------------------------------------------------------
 st.set_page_config(page_title="Site Material Scanner", page_icon="🏗️", layout="wide")
 
@@ -70,14 +109,13 @@ if not api_key and "GEMINI_API_KEY" in os.environ:
     api_key = os.environ["GEMINI_API_KEY"]
 
 # -----------------------------------------------------------------------------
-# 3. FIELD INPUT (Camera or File Upload)
+# 4. FIELD INPUT (Camera or File Upload)
 # -----------------------------------------------------------------------------
 tab1, tab2 = st.tabs(["📸 Scan Material", "📊 Local Inventory History"])
 
 with tab1:
     st.subheader("Capture / Upload Material")
     
-    # Allows both live photo capture on mobile & manual photo upload
     input_type = st.radio("Choose Input Method:", ["Camera Capture", "File Upload"], horizontal=True)
     
     image_file = None
@@ -114,43 +152,23 @@ with tab1:
                         Return ONLY JSON matching the requested fields.
                         """
 
-                        # --- RETRY & MODEL CONFIGURATION ---
-                        max_retries = 3
-                        response = None
-                        target_model = "gemini-3.5-flash"  # Updated to the current stable model
+                        json_schema = {
+                            "type": "OBJECT",
+                            "properties": {
+                                "item_name": {"type": "STRING"},
+                                "specifications": {"type": "STRING"},
+                                "unit": {"type": "STRING"},
+                                "low_price_myr": {"type": "NUMBER"},
+                                "high_price_myr": {"type": "NUMBER"}
+                            },
+                            "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
+                        }
 
-                        for attempt in range(max_retries):
-                            try:
-                                response = client.models.generate_content(
-                                    model=target_model,
-                                    contents=[img, prompt],
-                                    config=types.GenerateContentConfig(
-                                        response_mime_type="application/json",
-                                        response_schema={
-                                            "type": "OBJECT",
-                                            "properties": {
-                                                "item_name": {"type": "STRING"},
-                                                "specifications": {"type": "STRING"},
-                                                "unit": {"type": "STRING"},
-                                                "low_price_myr": {"type": "NUMBER"},
-                                                "high_price_myr": {"type": "NUMBER"}
-                                            },
-                                            "required": ["item_name", "specifications", "unit", "low_price_myr", "high_price_myr"]
-                                        }
-                                    )
-                                )
-                                break  # Call succeeded, exit retry loop
-                            except Exception as api_err:
-                                err_str = str(api_err)
-                                if ("503" in err_str or "UNAVAILABLE" in err_str) and attempt < max_retries - 1:
-                                    time.sleep(2 * (attempt + 1))
-                                    continue
-                                else:
-                                    raise api_err
+                        # Execute with retries & model fallback
+                        response_text = call_gemini_with_fallback(client, img, prompt, json_schema)
+                        data = json.loads(response_text)
 
-                        data = json.loads(response.text)
-
-                        # Save automatically to app DB
+                        # Save automatically to DB
                         insert_record(
                             data["item_name"],
                             data["specifications"],
@@ -162,7 +180,7 @@ with tab1:
 
                         st.success("✅ Analysis Complete & Saved to Internal App Database!")
                         
-                        # Display Results Card
+                        # Display Results
                         col1, col2, col3 = st.columns(3)
                         col1.metric("Material", data["item_name"])
                         col2.metric("Unit", data["unit"])
@@ -171,10 +189,10 @@ with tab1:
                         st.info(f"**Specs:** {data['specifications']}")
 
                     except Exception as e:
-                        st.error(f"Error processing image: {str(e)}")
+                        st.error(f"Error processing request: {str(e)}")
 
 # -----------------------------------------------------------------------------
-# 4. IN-APP STORAGE & HISTORY TAB
+# 5. IN-APP STORAGE & HISTORY TAB
 # -----------------------------------------------------------------------------
 with tab2:
     st.subheader("Stored Material Records")
@@ -183,7 +201,6 @@ with tab2:
     if df_records.empty:
         st.info("No materials saved in the database yet.")
     else:
-        # Display editable/viewable table stored inside SQLite
         st.dataframe(df_records, use_container_width=True)
 
         st.divider()
