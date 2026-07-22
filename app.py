@@ -115,7 +115,7 @@ with tab1:
 
                         # Standard structured JSON schema response
                         response = client.models.generate_content(
-                            model='gemini-1.5-flash',
+                            model='gemini-2.5-flash',
                             contents=[img, prompt],
                             config=types.GenerateContentConfig(
                                 response_mime_type="application/json",
